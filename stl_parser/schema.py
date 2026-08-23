@@ -73,11 +73,17 @@ class SchemaConstraints(BaseModel):
 
 
 class SchemaEdgeRule(BaseModel):
-    """Allowed source type, relation, and target type combinations."""
+    """Allowed edge combinations, keyed on either the `relation` modifier (structural
+    schemas) or the `action` modifier (agent-comms / event schemas).
+
+    Exactly one of `relations` / `actions` is populated per rule; it names the modifier
+    field the rule keys on. `source_types` / `target_types` match the anchor name-prefix
+    (before the first `_`)."""
 
     source_types: List[str]
-    relations: List[str]
     target_types: List[str]
+    relations: List[str] = Field(default_factory=list)
+    actions: List[str] = Field(default_factory=list)
 
 
 class RequirementRule(BaseModel):
@@ -354,23 +360,29 @@ class _SchemaParser:
         values: Dict[str, List[str]] = {}
         while self._peek() and self._peek()[1] != "}":
             key = self._advance()[1]
-            if key not in {"source", "relation", "target"}:
+            if key not in {"source", "relation", "action", "target"}:
                 raise STLSchemaError(
                     code=ErrorCode.E602_INVALID_SCHEMA_FORMAT,
                     message=f"Unknown edge rule field '{key}'",
                 )
             self._expect_value(":")
             values[key] = self._parse_string_list()
-        missing = {"source", "relation", "target"} - values.keys()
+        missing = {"source", "target"} - values.keys()
         if missing:
             raise STLSchemaError(
                 code=ErrorCode.E602_INVALID_SCHEMA_FORMAT,
                 message=f"Edge rule missing: {', '.join(sorted(missing))}",
             )
+        if ("relation" in values) == ("action" in values):
+            raise STLSchemaError(
+                code=ErrorCode.E602_INVALID_SCHEMA_FORMAT,
+                message="Edge rule must key on exactly one of 'relation' or 'action'",
+            )
         return SchemaEdgeRule(
             source_types=values["source"],
-            relations=values["relation"],
             target_types=values["target"],
+            relations=values.get("relation", []),
+            actions=values.get("action", []),
         )
 
     def _parse_require_block(self) -> "RequirementRule":
@@ -894,26 +906,40 @@ def _validate_edge_rules(
 ) -> None:
     if not rules:
         return
-    relation = None
-    if statement.modifiers is not None:
-        relation = getattr(statement.modifiers, "relation", None)
-        if relation is None:
-            relation = statement.modifiers.custom.get("relation")
+
+    def _mod(key: str):
+        if statement.modifiers is None:
+            return None
+        val = getattr(statement.modifiers, key, None)
+        if val is None:
+            val = statement.modifiers.custom.get(key)
+        return val
+
+    relation = _mod("relation")
+    action = _mod("action")
     source_type = statement.source.name.split("_", 1)[0]
     target_type = statement.target.name.split("_", 1)[0]
-    if any(
-        source_type in rule.source_types
-        and relation in rule.relations
-        and target_type in rule.target_types
-        for rule in rules
-    ):
+
+    def _matches(rule: SchemaEdgeRule) -> bool:
+        if source_type not in rule.source_types or target_type not in rule.target_types:
+            return False
+        if rule.actions:
+            return action in rule.actions
+        return relation in rule.relations
+
+    if any(_matches(rule) for rule in rules):
         return
+
+    # Report against whichever key the rule set uses (action-keyed schemas name action).
+    action_keyed = any(rule.actions for rule in rules)
+    key_field = "action" if action_keyed else "relation"
+    key_val = action if action_keyed else relation
     errors.append(SchemaError(
         code="E611",
         message=f"Statement {statement_index}: edge "
-                f"{source_type} -[{relation}]-> {target_type} is not allowed",
+                f"{source_type} -[{key_field}={key_val}]-> {target_type} is not allowed",
         statement_index=statement_index,
-        field="relation",
+        field=key_field,
     ))
 
 
