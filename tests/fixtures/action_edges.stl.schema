@@ -1,0 +1,14 @@
+# Fixture: action-keyed edge rules.
+schema ActionEdges v0.1 {
+    namespace "Review"
+    anchor source { namespace: required("Review") pattern: /(Gate|Verifier)_[A-Za-z0-9_]+/ }
+    anchor target { pattern: /(Branch|Revision|WorkItem)_[A-Za-z0-9_]+/ }
+    modifier {
+        required: [action]
+        optional: [outcome]
+        action: enum("gate", "verify", "merge")
+        outcome: enum("pass", "fail")
+    }
+    edge { source: [Gate] action: [gate] target: [Branch] }
+    edge { source: [Verifier] action: [verify, merge] target: [Revision, WorkItem] }
+}
