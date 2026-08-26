@@ -1,4 +1,4 @@
-"""Cross-repository conformance tests for the versioned KDY profile."""
+"""Cross-repository conformance tests for the Runekiln STL-K profile."""
 
 import os
 from pathlib import Path
@@ -15,23 +15,24 @@ pytestmark = pytest.mark.skipif(
 )
 SPEC_ROOT = Path(SPEC_ROOT_VALUE) if SPEC_ROOT_VALUE else Path(".")
 SCHEMA_ROOT = SPEC_ROOT / "docs" / "schemas"
-KDY_ROOT = SCHEMA_ROOT / "kdy"
+STLK_ROOT = SCHEMA_ROOT / "runekiln"
+LEGACY_ROOT = SCHEMA_ROOT / "kdy"
 
 
-def _validate(path: Path, profile_path: Path = KDY_ROOT / "kdy.stl.profile"):
+def _validate(path: Path, profile_path: Path = STLK_ROOT / "stl-k.stl.profile"):
     return validate_against_profiles(
         parse(path.read_text(encoding="utf-8")),
         load_profile(str(profile_path)),
     )
 
 
-def test_kdy_profile_accepts_complete_four_lane_envelope():
-    result = _validate(KDY_ROOT / "examples" / "envelope-valid.stl")
+def test_stlk_profile_accepts_complete_four_lane_envelope():
+    result = _validate(STLK_ROOT / "examples" / "envelope-valid.stl")
     assert result.errors == []
 
 
-def test_kdy_profile_rejects_missing_event_identity_precisely():
-    result = _validate(KDY_ROOT / "examples" / "envelope-invalid.stl")
+def test_stlk_profile_rejects_missing_event_identity_precisely():
+    result = _validate(STLK_ROOT / "examples" / "envelope-invalid.stl")
     event_errors = [error for error in result.errors if error.field == "event_id"]
     assert [(error.code, error.message) for error in event_errors] == [
         ("E607", "Statement 0: missing required modifier 'event_id'")
@@ -44,16 +45,24 @@ def test_kdy_profile_rejects_missing_event_identity_precisely():
         ("confidence=0.95", "confidence=0.9", "confidence"),
         ('visibility="procedural"', 'visibility="private"', "visibility"),
         ('sensitivity="internal"', 'sensitivity="restricted"', "sensitivity"),
-        ('profile_version="kdy-0.1"', 'profile_version="kdy-0.2"', "profile_version"),
+        ('profile_version="stl-k/0.1"', 'profile_version="stl-k/0.2"', "profile_version"),
     ],
 )
-def test_kdy_profile_rejects_noncanonical_envelope_values(old, new, field):
-    text = (KDY_ROOT / "examples" / "envelope-valid.stl").read_text(encoding="utf-8")
+def test_stlk_profile_rejects_noncanonical_envelope_values(old, new, field):
+    text = (STLK_ROOT / "examples" / "envelope-valid.stl").read_text(encoding="utf-8")
     result = validate_against_profiles(
         parse(text.replace(old, new, 1)),
-        load_profile(str(KDY_ROOT / "kdy.stl.profile")),
+        load_profile(str(STLK_ROOT / "stl-k.stl.profile")),
     )
     assert any(error.code == "E603" and error.field == field for error in result.errors)
+
+
+def test_legacy_kdy_profile_is_an_explicit_alias_for_stlk():
+    result = _validate(
+        LEGACY_ROOT / "examples" / "envelope-valid.stl",
+        LEGACY_ROOT / "kdy.stl.profile",
+    )
+    assert result.errors == []
 
 
 @pytest.mark.parametrize("fixture_name", [
