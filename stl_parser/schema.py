@@ -145,6 +145,27 @@ class SchemaValidationResult(BaseModel):
     schema_version: str = ""
 
 
+class LoadedProfile(dict):
+    """Routed schemas plus schemas applied to every routed statement.
+
+    This remains a ``dict`` so existing callers and profile manifests retain
+    their current API and behavior.
+    """
+
+    def __init__(
+        self,
+        *args,
+        applied_schemas: Optional[List[STLSchema]] = None,
+        profile_name: str = "",
+        profile_version: str = "",
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self.applied_schemas = applied_schemas or []
+        self.profile_name = profile_name
+        self.profile_version = profile_version
+
+
 # ========================================
 # SCHEMA PARSING
 # ========================================
@@ -562,17 +583,65 @@ def load_schema(source: str) -> STLSchema:
 
 
 def load_profile(source: str) -> Dict[str, STLSchema]:
-    """Load the schemas included by a ``.stl.profile`` manifest."""
-    path = Path(source)
+    """Load routed and globally-applied schemas from a profile manifest."""
+    return _load_profile(Path(source), [])
+
+
+def _profile_entries(body: str) -> Dict[str, List[str]]:
+    """Parse the small profile-manifest body without changing STL grammar."""
+    entries: Dict[str, List[str]] = {}
+    matches = list(re.finditer(r"\b(include|apply)\s*:\s*\[([^]]*)\]", body, re.DOTALL))
+    remainder = body
+    for match in reversed(matches):
+        remainder = remainder[:match.start()] + remainder[match.end():]
+    if remainder.strip() or not matches:
+        raise STLSchemaError(
+            code=ErrorCode.E602_INVALID_SCHEMA_FORMAT,
+            message="Invalid STL profile manifest",
+        )
+    for match in matches:
+        key = match.group(1)
+        if key in entries:
+            raise STLSchemaError(
+                code=ErrorCode.E602_INVALID_SCHEMA_FORMAT,
+                message=f"Duplicate profile field '{key}'",
+            )
+        entries[key] = [
+            item.strip().strip('"\'')
+            for item in match.group(2).split(",")
+            if item.strip().strip('"\'')
+        ]
+    if "include" not in entries:
+        raise STLSchemaError(
+            code=ErrorCode.E602_INVALID_SCHEMA_FORMAT,
+            message="Profile manifest requires an include list",
+        )
+    return entries
+
+
+def _schema_path(base: Path, name: str) -> Path:
+    path = base / name
+    if name.endswith((".stl.schema", ".schema")):
+        return path
+    return base / f"{name}.stl.schema"
+
+
+def _load_profile(path: Path, stack: List[Path]) -> LoadedProfile:
+    path = path.resolve()
     if not path.is_file():
         raise STLSchemaError(
             code=ErrorCode.E400_FILE_NOT_FOUND,
-            message=f"Profile file not found: {source}",
+            message=f"Profile file not found: {path}",
+        )
+    if path in stack:
+        chain = " -> ".join(str(item) for item in stack + [path])
+        raise STLSchemaError(
+            code=ErrorCode.E602_INVALID_SCHEMA_FORMAT,
+            message=f"Profile include cycle: {chain}",
         )
     text = path.read_text(encoding="utf-8")
     match = re.fullmatch(
-        r"\s*profile\s+[A-Za-z_]\w*\s+v?[\w.]+\s*\{\s*"
-        r"include\s*:\s*\[([^]]*)\]\s*\}\s*",
+        r"\s*profile\s+([A-Za-z_]\w*)\s+(v?[\w.]+)\s*\{(.*)\}\s*",
         re.sub(r"#[^\n]*", "", text),
         re.DOTALL,
     )
@@ -581,24 +650,43 @@ def load_profile(source: str) -> Dict[str, STLSchema]:
             code=ErrorCode.E602_INVALID_SCHEMA_FORMAT,
             message="Invalid STL profile manifest",
         )
-    profiles: Dict[str, STLSchema] = {}
-    for raw_name in match.group(1).split(","):
-        name = raw_name.strip().strip('"\'')
-        if not name:
-            continue
-        schema_path = path.parent / f"{name}.stl.schema"
-        schema = load_schema(str(schema_path))
-        if not schema.namespace:
+    entries = _profile_entries(match.group(3))
+    profiles = LoadedProfile(
+        profile_name=match.group(1),
+        profile_version=match.group(2),
+    )
+    for name in entries["include"]:
+        if name.endswith(".stl.profile"):
+            nested = _load_profile(path.parent / name, stack + [path])
+            for namespace, schema in nested.items():
+                if namespace in profiles:
+                    raise STLSchemaError(
+                        code=ErrorCode.E602_INVALID_SCHEMA_FORMAT,
+                        message=f"Duplicate profile namespace '{namespace}'",
+                    )
+                profiles[namespace] = schema
+            profiles.applied_schemas.extend(nested.applied_schemas)
+        else:
+            schema = load_schema(str(_schema_path(path.parent, name)))
+            if not schema.namespace:
+                raise STLSchemaError(
+                    code=ErrorCode.E602_INVALID_SCHEMA_FORMAT,
+                    message=f"Included schema '{name}' has no namespace",
+                )
+            if schema.namespace in profiles:
+                raise STLSchemaError(
+                    code=ErrorCode.E602_INVALID_SCHEMA_FORMAT,
+                    message=f"Duplicate profile namespace '{schema.namespace}'",
+                )
+            profiles[schema.namespace] = schema
+    for name in entries.get("apply", []):
+        schema = load_schema(str(_schema_path(path.parent, name)))
+        if schema.namespace:
             raise STLSchemaError(
                 code=ErrorCode.E602_INVALID_SCHEMA_FORMAT,
-                message=f"Included schema '{name}' has no namespace",
+                message=f"Applied schema '{name}' must not declare a namespace",
             )
-        if schema.namespace in profiles:
-            raise STLSchemaError(
-                code=ErrorCode.E602_INVALID_SCHEMA_FORMAT,
-                message=f"Duplicate profile namespace '{schema.namespace}'",
-            )
-        profiles[schema.namespace] = schema
+        profiles.applied_schemas.append(schema)
     if not profiles:
         raise STLSchemaError(
             code=ErrorCode.E602_INVALID_SCHEMA_FORMAT,
@@ -679,6 +767,7 @@ def validate_against_profiles(
 ) -> SchemaValidationResult:
     """Validate statements using source-selected schemas and shared targets."""
     errors: List[SchemaError] = []
+    applied_schemas = getattr(profiles, "applied_schemas", [])
     routed_statements: Dict[str, List[Statement]] = {
         name: [] for name in profiles
     }
@@ -702,6 +791,16 @@ def validate_against_profiles(
         )
         _validate_modifier_constraint(statement, profile.modifier, idx, errors)
         _validate_edge_rules(statement, profile.edge_rules, idx, errors)
+
+        for applied in applied_schemas:
+            _validate_anchor_constraint(
+                statement.source, applied.source_anchor, "source", idx, errors
+            )
+            _validate_anchor_constraint(
+                statement.target, applied.target_anchor, "target", idx, errors
+            )
+            _validate_modifier_constraint(statement, applied.modifier, idx, errors)
+            _validate_edge_rules(statement, applied.edge_rules, idx, errors)
 
         if not _target_matches_profiles(statement.target, profiles):
             errors.append(SchemaError(
@@ -729,15 +828,35 @@ def validate_against_profiles(
                         f"{statement_count} > {maximum}",
             ))
 
+    for applied in applied_schemas:
+        statement_count = len(parse_result.statements)
+        minimum = applied.constraints.min_statements
+        maximum = applied.constraints.max_statements
+        if minimum is not None and statement_count < minimum:
+            errors.append(SchemaError(
+                code="E605",
+                message=f"Applied schema '{applied.name}' has too few statements: "
+                        f"{statement_count} < {minimum}",
+            ))
+        if maximum is not None and statement_count > maximum:
+            errors.append(SchemaError(
+                code="E605",
+                message=f"Applied schema '{applied.name}' has too many statements: "
+                        f"{statement_count} > {maximum}",
+            ))
+
     chain_limits = [
         profile.constraints.max_chain_length
-        for profile in profiles.values()
+        for profile in list(profiles.values()) + applied_schemas
         if profile.constraints.max_chain_length is not None
     ]
     graph_constraints = SchemaConstraints(
         allow_cycles=(
             False
-            if any(profile.constraints.allow_cycles is False for profile in profiles.values())
+            if any(
+                profile.constraints.allow_cycles is False
+                for profile in list(profiles.values()) + applied_schemas
+            )
             else None
         ),
         max_chain_length=min(chain_limits) if chain_limits else None,
@@ -746,7 +865,11 @@ def validate_against_profiles(
 
     # Cross-statement requirements are document-level: aggregate across profiles
     # and evaluate over the whole statement set.
-    all_requirements = [req for profile in profiles.values() for req in profile.requirements]
+    all_requirements = [
+        req
+        for profile in list(profiles.values()) + applied_schemas
+        for req in profile.requirements
+    ]
     _validate_requirements(parse_result.statements, all_requirements, errors, resolvers)
 
     versions = ",".join(

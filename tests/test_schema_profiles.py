@@ -61,6 +61,69 @@ class TestLoadProfile:
         assert profiles["Core"].name == "CoreFixture"
         assert all(schema.namespace == key for key, schema in profiles.items())
 
+    def test_nested_profile_applies_overlay_to_every_routed_statement(self, tmp_path):
+        (tmp_path / "coord.stl.schema").write_text(
+            'schema Coord v1.0 { namespace "Coord" '
+            'anchor source { namespace: required("Coord") pattern: /Agent_[A-Za-z0-9_]+/ } '
+            'anchor target { pattern: /Work_[A-Za-z0-9_]+/ } '
+            'modifier { required: [action] action: enum("claim") } }',
+            encoding="utf-8",
+        )
+        (tmp_path / "agent.stl.profile").write_text(
+            "profile Agent v1.0 { include: [coord] }", encoding="utf-8"
+        )
+        (tmp_path / "envelope.stl.schema").write_text(
+            "schema Envelope v1.0 { modifier { required: [event_id] event_id: string } }",
+            encoding="utf-8",
+        )
+        manifest = tmp_path / "composite.stl.profile"
+        manifest.write_text(
+            'profile Composite v1.0 { include: ["agent.stl.profile"] '
+            'apply: ["envelope.stl.schema"] }',
+            encoding="utf-8",
+        )
+
+        profiles = load_profile(str(manifest))
+        valid = parse(
+            '[Coord:Agent_planner] -> [Coord:Work_item] '
+            '::mod(action="claim", event_id="evt_1")'
+        )
+        missing = parse(
+            '[Coord:Agent_planner] -> [Coord:Work_item] ::mod(action="claim")'
+        )
+
+        assert validate_against_profiles(valid, profiles).is_valid
+        result = validate_against_profiles(missing, profiles)
+        error = next(error for error in result.errors if error.field == "event_id")
+        assert error.code == "E607"
+        assert "missing required modifier 'event_id'" in error.message
+
+    def test_nested_profile_cycle_is_rejected(self, tmp_path):
+        (tmp_path / "one.stl.profile").write_text(
+            'profile One v1.0 { include: ["two.stl.profile"] }', encoding="utf-8"
+        )
+        (tmp_path / "two.stl.profile").write_text(
+            'profile Two v1.0 { include: ["one.stl.profile"] }', encoding="utf-8"
+        )
+
+        with pytest.raises(STLSchemaError, match="Profile include cycle"):
+            load_profile(str(tmp_path / "one.stl.profile"))
+
+    def test_applied_schema_cannot_claim_routing_namespace(self, tmp_path):
+        (tmp_path / "base.stl.schema").write_text(
+            'schema Base v1.0 { namespace "Base" }', encoding="utf-8"
+        )
+        (tmp_path / "bad.stl.schema").write_text(
+            'schema Bad v1.0 { namespace "Bad" }', encoding="utf-8"
+        )
+        manifest = tmp_path / "bad.stl.profile"
+        manifest.write_text(
+            "profile Bad v1.0 { include: [base] apply: [bad] }", encoding="utf-8"
+        )
+
+        with pytest.raises(STLSchemaError, match="Applied schema 'bad' must not declare a namespace"):
+            load_profile(str(manifest))
+
     def test_manifest_rejects_missing_manifest_file(self, tmp_path):
         with pytest.raises(STLSchemaError) as exc_info:
             load_profile(str(tmp_path / "absent.stl.profile"))
