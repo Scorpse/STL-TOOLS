@@ -104,6 +104,39 @@ class RequirementRule(BaseModel):
     resolver: Optional[str] = None  # name of the identity resolver the binding must pass
 
 
+class ConditionalRule(BaseModel):
+    """Require fields when another modifier has one of the configured values."""
+
+    when_field: str
+    values: List[str]
+    required_fields: List[str]
+
+
+class ReferenceRule(BaseModel):
+    """Require a modifier value to reference another statement's field."""
+
+    field: str
+    target_field: str
+    required_actions: List[str] = Field(default_factory=list)
+    prior: bool = False
+
+
+class UniqueRule(BaseModel):
+    """Require unique modifier values, optionally excluding selected actions."""
+
+    field: str
+    except_actions: List[str] = Field(default_factory=list)
+
+
+class SameReferenceRule(BaseModel):
+    """Require a field to equal a field on the referenced statement."""
+
+    field: str
+    reference_field: str
+    target_field: str
+    actions: List[str]
+
+
 class STLSchema(BaseModel):
     """Top-level schema model for STL document validation."""
 
@@ -116,6 +149,10 @@ class STLSchema(BaseModel):
     constraints: SchemaConstraints = Field(default_factory=SchemaConstraints)
     edge_rules: List[SchemaEdgeRule] = Field(default_factory=list)
     requirements: List["RequirementRule"] = Field(default_factory=list)
+    conditionals: List[ConditionalRule] = Field(default_factory=list)
+    references: List[ReferenceRule] = Field(default_factory=list)
+    unique_rules: List[UniqueRule] = Field(default_factory=list)
+    same_rules: List[SameReferenceRule] = Field(default_factory=list)
 
 
 class SchemaError(BaseModel):
@@ -181,7 +218,7 @@ _TOKEN_RE = re.compile(
     (?P<keyword>schema|anchor|modifier|constraints|edge|namespace|source|target|relation|
                 required|optional|pattern|float|enum|string|datetime|boolean|integer|
                 max_chain_length|allow_cycles|min_statements|max_statements|
-                true|false)             |
+                true|false)\b           |
     (?P<ident>[A-Za-z_]\w*(?:\.\w+)*)          |
     (?P<lbrace>\{)                      |
     (?P<rbrace>\})                      |
@@ -328,6 +365,61 @@ class _SchemaParser:
                 schema.requirements.append(self._parse_require_block())
                 self._expect_value("}")
 
+            elif keyword == "conditional":
+                self._advance()
+                self._expect_value("{")
+                values = self._parse_rule_fields(
+                    {"when", "values", "required"}, {"values", "required"}
+                )
+                self._expect_value("}")
+                schema.conditionals.append(ConditionalRule(
+                    when_field=values["when"],
+                    values=values["values"],
+                    required_fields=values["required"],
+                ))
+
+            elif keyword == "reference":
+                self._advance()
+                self._expect_value("{")
+                values = self._parse_rule_fields(
+                    {"field", "target", "required_for", "prior"},
+                    {"required_for"},
+                    {"prior"},
+                )
+                self._expect_value("}")
+                schema.references.append(ReferenceRule(
+                    field=values["field"],
+                    target_field=values["target"],
+                    required_actions=values.get("required_for", []),
+                    prior=values.get("prior", False),
+                ))
+
+            elif keyword == "unique":
+                self._advance()
+                self._expect_value("{")
+                values = self._parse_rule_fields(
+                    {"field", "except_actions"}, {"except_actions"}
+                )
+                self._expect_value("}")
+                schema.unique_rules.append(UniqueRule(
+                    field=values["field"],
+                    except_actions=values.get("except_actions", []),
+                ))
+
+            elif keyword == "same":
+                self._advance()
+                self._expect_value("{")
+                values = self._parse_rule_fields(
+                    {"field", "reference", "target", "actions"}, {"actions"}
+                )
+                self._expect_value("}")
+                schema.same_rules.append(SameReferenceRule(
+                    field=values["field"],
+                    reference_field=values["reference"],
+                    target_field=values["target"],
+                    actions=values["actions"],
+                ))
+
             else:
                 raise STLSchemaError(
                     code=ErrorCode.E602_INVALID_SCHEMA_FORMAT,
@@ -336,6 +428,34 @@ class _SchemaParser:
 
         self._expect_value("}")
         return schema
+
+    def _parse_rule_fields(
+        self,
+        allowed: set,
+        list_fields: set = frozenset(),
+        boolean_fields: set = frozenset(),
+    ) -> Dict[str, Any]:
+        values: Dict[str, Any] = {}
+        while self._peek() and self._peek()[1] != "}":
+            key = self._advance()[1]
+            if key not in allowed or key in values:
+                raise STLSchemaError(
+                    code=ErrorCode.E602_INVALID_SCHEMA_FORMAT,
+                    message=f"Unknown or duplicate rule field '{key}'",
+                )
+            self._expect_value(":")
+            if key in list_fields:
+                values[key] = self._parse_string_list()
+            else:
+                raw = self._advance()[1]
+                values[key] = raw.lower() == "true" if key in boolean_fields else raw.strip('"\'')
+        missing = (allowed - set(values)) - set(boolean_fields) - set(list_fields)
+        if missing:
+            raise STLSchemaError(
+                code=ErrorCode.E602_INVALID_SCHEMA_FORMAT,
+                message=f"Rule missing: {', '.join(sorted(missing))}",
+            )
+        return values
 
     def _parse_anchor_block(self) -> SchemaAnchorConstraint:
         """Parse anchor constraint block."""
@@ -750,6 +870,14 @@ def validate_against_schema(
         _validate_edge_rules(stmt, schema.edge_rules, idx, errors)
 
     _validate_requirements(parse_result.statements, schema.requirements, errors, resolvers)
+    _validate_conversation_rules(
+        parse_result.statements,
+        schema.conditionals,
+        schema.references,
+        schema.unique_rules,
+        schema.same_rules,
+        errors,
+    )
 
     return SchemaValidationResult(
         is_valid=len(errors) == 0,
@@ -871,6 +999,15 @@ def validate_against_profiles(
         for req in profile.requirements
     ]
     _validate_requirements(parse_result.statements, all_requirements, errors, resolvers)
+    all_schemas = list(profiles.values()) + applied_schemas
+    _validate_conversation_rules(
+        parse_result.statements,
+        [rule for schema in all_schemas for rule in schema.conditionals],
+        [rule for schema in all_schemas for rule in schema.references],
+        [rule for schema in all_schemas for rule in schema.unique_rules],
+        [rule for schema in all_schemas for rule in schema.same_rules],
+        errors,
+    )
 
     versions = ",".join(
         f"{name}:{profile.version}" for name, profile in sorted(profiles.items())
@@ -948,6 +1085,105 @@ def _validate_requirements(
                             "no statement satisfies it.",
                     statement_index=idx,
                     field="action",
+                ))
+
+
+def _modifier_value(statement: Statement, field: str) -> Any:
+    if statement.modifiers is None:
+        return None
+    value = getattr(statement.modifiers, field, None)
+    if value is None:
+        value = statement.modifiers.custom.get(field)
+    return value
+
+
+def _validate_conversation_rules(
+    statements: List[Statement],
+    conditionals: List[ConditionalRule],
+    references: List[ReferenceRule],
+    unique_rules: List[UniqueRule],
+    same_rules: List[SameReferenceRule],
+    errors: List[SchemaError],
+) -> None:
+    """Validate generic conditional, reference, uniqueness, and equality rules."""
+    for rule in conditionals:
+        for idx, statement in enumerate(statements):
+            if str(_modifier_value(statement, rule.when_field)) not in rule.values:
+                continue
+            for field in rule.required_fields:
+                if _modifier_value(statement, field) is None:
+                    errors.append(SchemaError(
+                        code="E607",
+                        message=f"Statement {idx}: missing conditionally required modifier '{field}'",
+                        statement_index=idx,
+                        field=field,
+                    ))
+
+    for rule in references:
+        for idx, statement in enumerate(statements):
+            action = _modifier_value(statement, "action")
+            value = _modifier_value(statement, rule.field)
+            if value is None:
+                if action in rule.required_actions:
+                    errors.append(SchemaError(
+                        code="E607",
+                        message=f"Statement {idx}: missing conditionally required modifier '{rule.field}'",
+                        statement_index=idx,
+                        field=rule.field,
+                    ))
+                continue
+            candidates = statements[:idx] if rule.prior else statements
+            if not any(_modifier_value(candidate, rule.target_field) == value for candidate in candidates):
+                errors.append(SchemaError(
+                    code="E613",
+                    message=f"Statement {idx}: '{rule.field}' value '{value}' does not reference "
+                            f"an existing {'prior ' if rule.prior else ''}'{rule.target_field}'",
+                    statement_index=idx,
+                    field=rule.field,
+                ))
+
+    for rule in unique_rules:
+        seen = set()
+        for idx, statement in enumerate(statements):
+            if _modifier_value(statement, "action") in rule.except_actions:
+                continue
+            value = _modifier_value(statement, rule.field)
+            if value is None:
+                continue
+            if value in seen:
+                errors.append(SchemaError(
+                    code="E614",
+                    message=f"Statement {idx}: duplicate '{rule.field}' value '{value}'",
+                    statement_index=idx,
+                    field=rule.field,
+                ))
+            else:
+                seen.add(value)
+
+    for rule in same_rules:
+        for idx, statement in enumerate(statements):
+            if _modifier_value(statement, "action") not in rule.actions:
+                continue
+            reference_value = _modifier_value(statement, rule.reference_field)
+            referenced = next(
+                (
+                    candidate
+                    for candidate in reversed(statements[:idx])
+                    if _modifier_value(candidate, rule.target_field) == reference_value
+                ),
+                None,
+            )
+            if referenced is None:
+                continue
+            value = _modifier_value(statement, rule.field)
+            expected = _modifier_value(referenced, rule.target_field)
+            if value != expected:
+                errors.append(SchemaError(
+                    code="E615",
+                    message=f"Statement {idx}: '{rule.field}' value '{value}' must match "
+                            f"referenced '{rule.target_field}' value '{expected}'",
+                    statement_index=idx,
+                    field=rule.field,
                 ))
 
 
