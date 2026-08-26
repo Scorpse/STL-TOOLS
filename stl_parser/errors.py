@@ -15,9 +15,8 @@ Error Code Ranges:
 - W001-W099: Warnings
 """
 
-from typing import Optional, Dict, Any, List
 from enum import Enum
-
+from typing import Any, Dict, List, Optional
 
 # ========================================
 # ERROR CODE ENUMS
@@ -115,6 +114,9 @@ class ErrorCode(str, Enum):
     E610_SCHEMA_PROFILE_ROUTING = "E610"
     E611_SCHEMA_EDGE_RULE = "E611"
     E612_SCHEMA_REQUIREMENT = "E612"
+    E613_SCHEMA_REFERENCE = "E613"
+    E614_SCHEMA_UNIQUENESS = "E614"
+    E615_SCHEMA_REFERENCE_MISMATCH = "E615"
 
     # LLM Errors (E700-E799)
     E700_LLM_CLEAN_ERROR = "E700"
@@ -403,6 +405,18 @@ ERROR_MESSAGES: Dict[str, Dict[str, str]] = {
     "E612": {
         "message": "Unsatisfied cross-statement requirement",
         "suggestion": "Add the required binding statement (matching action/outcome, independent verifier, resolvable identity) or supply the named resolver"
+    },
+    "E613": {
+        "message": "Schema reference target missing",
+        "suggestion": "Reference an existing field value in the required conversation scope"
+    },
+    "E614": {
+        "message": "Schema uniqueness violation",
+        "suggestion": "Use a distinct value for the unique field"
+    },
+    "E615": {
+        "message": "Schema referenced-field mismatch",
+        "suggestion": "Use the value carried by the referenced statement"
     },
     # Diff/Patch Errors
     "E950": {
