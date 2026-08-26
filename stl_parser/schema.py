@@ -98,8 +98,12 @@ class RequirementRule(BaseModel):
     """
 
     trigger_action: str
-    binding_action: str
+    binding_action: Optional[str] = None
+    binding_actions: List[str] = Field(default_factory=list)
     binding_outcome: Optional[str] = None
+    trigger_field: Optional[str] = None
+    trigger_values: List[str] = Field(default_factory=list)
+    match_field: Optional[str] = None
     independent: bool = False  # require verifier != claimant on the binding statement
     resolver: Optional[str] = None  # name of the identity resolver the binding must pass
 
@@ -118,6 +122,7 @@ class ReferenceRule(BaseModel):
     field: str
     target_field: str
     required_actions: List[str] = Field(default_factory=list)
+    target_actions: List[str] = Field(default_factory=list)
     prior: bool = False
 
 
@@ -137,6 +142,17 @@ class SameReferenceRule(BaseModel):
     actions: List[str]
 
 
+class ForbidRule(BaseModel):
+    """Reject a trigger directly or when a conflicting statement exists."""
+
+    action: str
+    outcome: Optional[str] = None
+    if_action: Optional[str] = None
+    if_outcomes: List[str] = Field(default_factory=list)
+    if_field: Optional[str] = None
+    if_values: List[str] = Field(default_factory=list)
+
+
 class STLSchema(BaseModel):
     """Top-level schema model for STL document validation."""
 
@@ -153,6 +169,7 @@ class STLSchema(BaseModel):
     references: List[ReferenceRule] = Field(default_factory=list)
     unique_rules: List[UniqueRule] = Field(default_factory=list)
     same_rules: List[SameReferenceRule] = Field(default_factory=list)
+    forbid_rules: List[ForbidRule] = Field(default_factory=list)
 
 
 class SchemaError(BaseModel):
@@ -369,7 +386,9 @@ class _SchemaParser:
                 self._advance()
                 self._expect_value("{")
                 values = self._parse_rule_fields(
-                    {"when", "values", "required"}, {"values", "required"}
+                    {"when", "values", "required"},
+                    {"values", "required"},
+                    required_fields={"when", "values", "required"},
                 )
                 self._expect_value("}")
                 schema.conditionals.append(ConditionalRule(
@@ -382,15 +401,17 @@ class _SchemaParser:
                 self._advance()
                 self._expect_value("{")
                 values = self._parse_rule_fields(
-                    {"field", "target", "required_for", "prior"},
-                    {"required_for"},
+                    {"field", "target", "required_for", "target_actions", "prior"},
+                    {"required_for", "target_actions"},
                     {"prior"},
+                    {"field", "target"},
                 )
                 self._expect_value("}")
                 schema.references.append(ReferenceRule(
                     field=values["field"],
                     target_field=values["target"],
                     required_actions=values.get("required_for", []),
+                    target_actions=values.get("target_actions", []),
                     prior=values.get("prior", False),
                 ))
 
@@ -398,7 +419,9 @@ class _SchemaParser:
                 self._advance()
                 self._expect_value("{")
                 values = self._parse_rule_fields(
-                    {"field", "except_actions"}, {"except_actions"}
+                    {"field", "except_actions"},
+                    {"except_actions"},
+                    required_fields={"field"},
                 )
                 self._expect_value("}")
                 schema.unique_rules.append(UniqueRule(
@@ -410,7 +433,9 @@ class _SchemaParser:
                 self._advance()
                 self._expect_value("{")
                 values = self._parse_rule_fields(
-                    {"field", "reference", "target", "actions"}, {"actions"}
+                    {"field", "reference", "target", "actions"},
+                    {"actions"},
+                    required_fields={"field", "reference", "target", "actions"},
                 )
                 self._expect_value("}")
                 schema.same_rules.append(SameReferenceRule(
@@ -419,6 +444,17 @@ class _SchemaParser:
                     target_field=values["target"],
                     actions=values["actions"],
                 ))
+
+            elif keyword == "forbid":
+                self._advance()
+                self._expect_value("{")
+                values = self._parse_rule_fields(
+                    {"action", "outcome", "if_action", "if_outcomes", "if_field", "if_values"},
+                    {"if_outcomes", "if_values"},
+                    required_fields={"action"},
+                )
+                self._expect_value("}")
+                schema.forbid_rules.append(ForbidRule(**values))
 
             else:
                 raise STLSchemaError(
@@ -434,6 +470,7 @@ class _SchemaParser:
         allowed: set,
         list_fields: set = frozenset(),
         boolean_fields: set = frozenset(),
+        required_fields: set = frozenset(),
     ) -> Dict[str, Any]:
         values: Dict[str, Any] = {}
         while self._peek() and self._peek()[1] != "}":
@@ -449,7 +486,7 @@ class _SchemaParser:
             else:
                 raw = self._advance()[1]
                 values[key] = raw.lower() == "true" if key in boolean_fields else raw.strip('"\'')
-        missing = (allowed - set(values)) - set(boolean_fields) - set(list_fields)
+        missing = required_fields - set(values)
         if missing:
             raise STLSchemaError(
                 code=ErrorCode.E602_INVALID_SCHEMA_FORMAT,
@@ -541,19 +578,35 @@ class _SchemaParser:
         while self._peek() and self._peek()[1] != "}":
             key = self._advance()[1]
             self._expect_value(":")
-            if key == "independent":
+            if key in {"bindings", "trigger_values"}:
+                data[key] = self._parse_string_list()
+            elif key == "independent":
                 data["independent"] = self._advance()[1] == "true"
             else:
                 data[key] = self._advance()[1].strip('"').strip("'")
-        if "action" not in data or "binding" not in data:
+        allowed = {
+            "action", "binding", "bindings", "outcome", "independent", "resolver",
+            "trigger_field", "trigger_values", "match",
+        }
+        unknown = set(data) - allowed
+        if unknown:
             raise STLSchemaError(
                 code=ErrorCode.E602_INVALID_SCHEMA_FORMAT,
-                message="require block needs at least 'action' and 'binding'",
+                message=f"Unknown require field '{sorted(unknown)[0]}'",
+            )
+        if "action" not in data or not (data.get("binding") or data.get("bindings")):
+            raise STLSchemaError(
+                code=ErrorCode.E602_INVALID_SCHEMA_FORMAT,
+                message="require block needs 'action' and 'binding' or 'bindings'",
             )
         return RequirementRule(
             trigger_action=data["action"],
-            binding_action=data["binding"],
+            binding_action=data.get("binding"),
+            binding_actions=data.get("bindings", []),
             binding_outcome=data.get("outcome"),
+            trigger_field=data.get("trigger_field"),
+            trigger_values=data.get("trigger_values", []),
+            match_field=data.get("match"),
             independent=bool(data.get("independent", False)),
             resolver=data.get("resolver"),
         )
@@ -876,6 +929,7 @@ def validate_against_schema(
         schema.references,
         schema.unique_rules,
         schema.same_rules,
+        schema.forbid_rules,
         errors,
     )
 
@@ -1006,6 +1060,7 @@ def validate_against_profiles(
         [rule for schema in all_schemas for rule in schema.references],
         [rule for schema in all_schemas for rule in schema.unique_rules],
         [rule for schema in all_schemas for rule in schema.same_rules],
+        [rule for schema in all_schemas for rule in schema.forbid_rules],
         errors,
     )
 
@@ -1040,35 +1095,39 @@ def _validate_requirements(
     if not requirements:
         return
 
-    def _mod(stmt: Statement, key: str) -> Optional[str]:
-        return getattr(stmt.modifiers, key, None)
-
     for req in requirements:
         for idx, stmt in enumerate(statements):
-            if _mod(stmt, "action") != req.trigger_action:
+            if _modifier_value(stmt, "action") != req.trigger_action:
+                continue
+            if req.trigger_field and str(_modifier_value(stmt, req.trigger_field)) not in req.trigger_values:
                 continue
 
+            binding_actions = req.binding_actions or [req.binding_action]
+
             def _satisfies(b: Statement) -> bool:
-                if _mod(b, "action") != req.binding_action:
+                if _modifier_value(b, "action") not in binding_actions:
                     return False
-                if req.binding_outcome is not None and _mod(b, "outcome") != req.binding_outcome:
+                if req.binding_outcome is not None and _modifier_value(b, "outcome") != req.binding_outcome:
+                    return False
+                if req.match_field and _modifier_value(b, req.match_field) != _modifier_value(stmt, req.match_field):
                     return False
                 if req.independent:
-                    verifier, claimant = _mod(b, "verifier"), _mod(b, "claimant")
+                    verifier = _modifier_value(b, "verifier")
+                    claimant = _modifier_value(b, "claimant")
                     if not verifier or not claimant or verifier == claimant:
                         return False
                 if req.resolver:
                     fn = resolvers.get(req.resolver)
                     if fn is None:
                         return False  # unresolvable gate — fail closed
-                    identity = _mod(b, "verifier") or _mod(b, "author")
+                    identity = _modifier_value(b, "verifier") or _modifier_value(b, "author")
                     if not identity or not fn(identity):
                         return False
                 return True
 
             if not any(_satisfies(b) for b in statements):
                 reason = (f"action='{req.trigger_action}' requires a statement with "
-                          f"action='{req.binding_action}'")
+                          f"action in {binding_actions}")
                 if req.binding_outcome is not None:
                     reason += f" outcome='{req.binding_outcome}'"
                 if req.independent:
@@ -1079,12 +1138,15 @@ def _validate_requirements(
                                    f"— but no '{req.resolver}' resolver was supplied")
                     else:
                         reason += f", with its identity resolving via '{req.resolver}'"
+                if req.match_field:
+                    reason += (f", matching {req.match_field}="
+                               f"'{_modifier_value(stmt, req.match_field)}'")
                 errors.append(SchemaError(
                     code="E612",
                     message=f"Statement {idx}: unsatisfied requirement — {reason}; "
                             "no statement satisfies it.",
                     statement_index=idx,
-                    field="action",
+                    field=req.match_field or "action",
                 ))
 
 
@@ -1103,6 +1165,7 @@ def _validate_conversation_rules(
     references: List[ReferenceRule],
     unique_rules: List[UniqueRule],
     same_rules: List[SameReferenceRule],
+    forbid_rules: List[ForbidRule],
     errors: List[SchemaError],
 ) -> None:
     """Validate generic conditional, reference, uniqueness, and equality rules."""
@@ -1133,13 +1196,50 @@ def _validate_conversation_rules(
                     ))
                 continue
             candidates = statements[:idx] if rule.prior else statements
-            if not any(_modifier_value(candidate, rule.target_field) == value for candidate in candidates):
+            if not any(
+                _modifier_value(candidate, rule.target_field) == value
+                and (
+                    not rule.target_actions
+                    or _modifier_value(candidate, "action") in rule.target_actions
+                )
+                for candidate in candidates
+            ):
                 errors.append(SchemaError(
                     code="E613",
                     message=f"Statement {idx}: '{rule.field}' value '{value}' does not reference "
                             f"an existing {'prior ' if rule.prior else ''}'{rule.target_field}'",
                     statement_index=idx,
                     field=rule.field,
+                ))
+
+    for rule in forbid_rules:
+        for idx, statement in enumerate(statements):
+            if _modifier_value(statement, "action") != rule.action:
+                continue
+            if rule.outcome is not None and _modifier_value(statement, "outcome") != rule.outcome:
+                continue
+            blocked = rule.if_action is None
+            if rule.if_action is not None:
+                blocked = any(
+                    _modifier_value(candidate, "action") == rule.if_action
+                    and (
+                        not rule.if_outcomes
+                        or str(_modifier_value(candidate, "outcome")) in rule.if_outcomes
+                    )
+                    and (
+                        rule.if_field is None
+                        or str(_modifier_value(candidate, rule.if_field)) in rule.if_values
+                    )
+                    for candidate in statements
+                )
+            if blocked:
+                field = "outcome" if rule.outcome is not None else "action"
+                errors.append(SchemaError(
+                    code="E616",
+                    message=f"Statement {idx}: action='{rule.action}' is forbidden"
+                            + (f" while action='{rule.if_action}' matches" if rule.if_action else ""),
+                    statement_index=idx,
+                    field=field,
                 ))
 
     for rule in unique_rules:

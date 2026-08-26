@@ -117,6 +117,7 @@ class ErrorCode(str, Enum):
     E613_SCHEMA_REFERENCE = "E613"
     E614_SCHEMA_UNIQUENESS = "E614"
     E615_SCHEMA_REFERENCE_MISMATCH = "E615"
+    E616_SCHEMA_FORBIDDEN_CONFLICT = "E616"
 
     # LLM Errors (E700-E799)
     E700_LLM_CLEAN_ERROR = "E700"
@@ -417,6 +418,10 @@ ERROR_MESSAGES: Dict[str, Dict[str, str]] = {
     "E615": {
         "message": "Schema referenced-field mismatch",
         "suggestion": "Use the value carried by the referenced statement"
+    },
+    "E616": {
+        "message": "Schema forbidden statement conflict",
+        "suggestion": "Resolve the blocking statement or remove the forbidden action"
     },
     # Diff/Patch Errors
     "E950": {
