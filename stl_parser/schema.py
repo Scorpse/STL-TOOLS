@@ -153,6 +153,12 @@ class ForbidRule(BaseModel):
     if_values: List[str] = Field(default_factory=list)
 
 
+class ProhibitRule(BaseModel):
+    """Reject statements carrying any named modifier."""
+
+    fields: List[str]
+
+
 class STLSchema(BaseModel):
     """Top-level schema model for STL document validation."""
 
@@ -170,6 +176,7 @@ class STLSchema(BaseModel):
     unique_rules: List[UniqueRule] = Field(default_factory=list)
     same_rules: List[SameReferenceRule] = Field(default_factory=list)
     forbid_rules: List[ForbidRule] = Field(default_factory=list)
+    prohibit_rules: List[ProhibitRule] = Field(default_factory=list)
 
 
 class SchemaError(BaseModel):
@@ -455,6 +462,17 @@ class _SchemaParser:
                 )
                 self._expect_value("}")
                 schema.forbid_rules.append(ForbidRule(**values))
+
+            elif keyword == "prohibit":
+                self._advance()
+                self._expect_value("{")
+                values = self._parse_rule_fields(
+                    {"fields"},
+                    {"fields"},
+                    required_fields={"fields"},
+                )
+                self._expect_value("}")
+                schema.prohibit_rules.append(ProhibitRule(fields=values["fields"]))
 
             else:
                 raise STLSchemaError(
@@ -930,6 +948,7 @@ def validate_against_schema(
         schema.unique_rules,
         schema.same_rules,
         schema.forbid_rules,
+        schema.prohibit_rules,
         errors,
     )
 
@@ -1061,6 +1080,7 @@ def validate_against_profiles(
         [rule for schema in all_schemas for rule in schema.unique_rules],
         [rule for schema in all_schemas for rule in schema.same_rules],
         [rule for schema in all_schemas for rule in schema.forbid_rules],
+        [rule for schema in all_schemas for rule in schema.prohibit_rules],
         errors,
     )
 
@@ -1100,6 +1120,8 @@ def _validate_requirements(
             if _modifier_value(stmt, "action") != req.trigger_action:
                 continue
             if req.trigger_field and str(_modifier_value(stmt, req.trigger_field)) not in req.trigger_values:
+                continue
+            if req.match_field and _modifier_value(stmt, req.match_field) is None:
                 continue
 
             binding_actions = req.binding_actions or [req.binding_action]
@@ -1166,6 +1188,7 @@ def _validate_conversation_rules(
     unique_rules: List[UniqueRule],
     same_rules: List[SameReferenceRule],
     forbid_rules: List[ForbidRule],
+    prohibit_rules: List[ProhibitRule],
     errors: List[SchemaError],
 ) -> None:
     """Validate generic conditional, reference, uniqueness, and equality rules."""
@@ -1241,6 +1264,17 @@ def _validate_conversation_rules(
                     statement_index=idx,
                     field=field,
                 ))
+
+    for rule in prohibit_rules:
+        for idx, statement in enumerate(statements):
+            for field in rule.fields:
+                if _modifier_value(statement, field) is not None:
+                    errors.append(SchemaError(
+                        code="E617",
+                        message=f"Statement {idx}: modifier '{field}' is prohibited",
+                        statement_index=idx,
+                        field=field,
+                    ))
 
     for rule in unique_rules:
         seen = set()
