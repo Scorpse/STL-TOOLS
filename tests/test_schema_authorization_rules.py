@@ -68,6 +68,15 @@ def test_requirement_matches_companion_identifier():
     assert (error.statement_index, error.field) == (0, "work_id")
 
 
+def test_requirement_defers_when_matching_identifier_is_missing():
+    result = _validate(
+        '[T:Node_delivery] -> [T:Node_target] '
+        '::mod(action="deliver", outcome="pending")'
+    )
+
+    assert not any(error.code == "E612" for error in result.errors)
+
+
 def test_requirement_accepts_any_configured_binding_action():
     result = _validate(
         '[T:Node_capability] -> [T:Node_target] '

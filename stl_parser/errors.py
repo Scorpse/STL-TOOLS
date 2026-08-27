@@ -118,6 +118,7 @@ class ErrorCode(str, Enum):
     E614_SCHEMA_UNIQUENESS = "E614"
     E615_SCHEMA_REFERENCE_MISMATCH = "E615"
     E616_SCHEMA_FORBIDDEN_CONFLICT = "E616"
+    E617_SCHEMA_PROHIBITED_FIELD = "E617"
 
     # LLM Errors (E700-E799)
     E700_LLM_CLEAN_ERROR = "E700"
@@ -422,6 +423,10 @@ ERROR_MESSAGES: Dict[str, Dict[str, str]] = {
     "E616": {
         "message": "Schema forbidden statement conflict",
         "suggestion": "Resolve the blocking statement or remove the forbidden action"
+    },
+    "E617": {
+        "message": "Schema prohibited modifier",
+        "suggestion": "Remove the prohibited field and use an allowed opaque reference instead"
     },
     # Diff/Patch Errors
     "E950": {
