@@ -95,8 +95,10 @@ STL_GRAMMAR = r"""
 
     // Identifier: Alphanumeric + underscore + hyphen + Unicode letters
     // Supports: English, Chinese, Arabic, Japanese, kebab-case, etc.
-    IDENTIFIER: /[\w\u4e00-\u9fff\u0600-\u06ff\u3040-\u30ff][\w\-\u4e00-\u9fff\u0600-\u06ff\u3040-\u30ff]*/
-
+    // v1.2.1 (2026-09-10): '.' allowed INSIDE an identifier (not first/last, not doubled) so tool and
+    // command ids such as [rho.psi.search] are anchors. Namespaced [Ns.Sub:Name] is unaffected — the
+    // colon still separates namespace from name; a bare dotted name without ':' is a simple identifier.
+    IDENTIFIER: /[\w\u4e00-\u9fff\u0600-\u06ff\u3040-\u30ff][\w\-\u4e00-\u9fff\u0600-\u06ff\u3040-\u30ff]*(?:\.[\w\-\u4e00-\u9fff\u0600-\u06ff\u3040-\u30ff]+)*/
     // Arrow symbols (Unicode and ASCII)
     ARROW_UNICODE: "\u2192"  // Unicode rightwards arrow
     ARROW_ASCII: "->"

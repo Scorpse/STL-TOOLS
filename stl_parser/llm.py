@@ -304,7 +304,7 @@ _ANCHOR_CHAR_SUBS = {
     "/": "_",
     "\\": "_",
     ",": "_",
-    ".": "_",
+    # "." left out since v1.2.1 — dotted identifiers ([rho.psi.search]) are valid.
     ";": "_",
 }
 

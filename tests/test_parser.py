@@ -233,3 +233,25 @@ class TestMarkdownEscapeHandling:
         text = r'\[A\] -> [B] ::mod(val="\[")'
         expected = r'[A] -> [B] ::mod(val="\[")'
         assert _remove_markdown_escapes(text) == expected
+
+
+# ── v1.12.0: dotted identifiers (STL protocol v1.2.1, 2026-09-10) ─────────────
+def test_dotted_identifier_is_a_valid_anchor():
+    from stl_parser import parse
+    r = parse('[Tool] -> [rho.psi.search] ::mod(query="alias roots")')
+    assert not r.errors
+    assert r.statements[0].target.name == "rho.psi.search"
+    assert r.statements[0].modifiers.model_dump(exclude_none=True)["query"] == "alias roots"
+
+
+def test_dotted_identifier_rejects_leading_trailing_and_doubled_dots():
+    from stl_parser import parse
+    for bad in ("[.hidden] -> [B]", "[a..b] -> [B]", "[x.] -> [B]"):
+        r = parse(bad)
+        assert r.errors and not r.statements, bad
+
+
+def test_namespace_hierarchy_dots_unchanged():
+    from stl_parser import parse
+    r = parse("[Physics.Quantum:Energy] -> [Mass]")
+    assert not r.errors and str(r.statements[0].source) == "[Physics.Quantum:Energy]"

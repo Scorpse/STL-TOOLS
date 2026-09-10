@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.12.0 (2026-09-10)
+
+### Dotted identifiers (STL protocol v1.2.1)
+
+- `.` is valid INSIDE an anchor identifier (never first, last, or doubled):
+  `[rho.psi.search]`, `[memory.remember]`. Tool and command ids are now anchors
+  verbatim — the tool-calling convention shared by SKC CLI and Rho AI
+  (`[Tool] -> [rho.psi.search] ::mod(query="…")`). Namespaced anchors
+  `[Ns.Sub:Name]` are unchanged (the colon still separates namespace from name).
+- Grammar terminal `IDENTIFIER`, the `Anchor.name` validator and the LLM repair
+  table (`.` no longer sanitised to `_`) changed together; tests cover the valid
+  form, the three invalid dot placements, and the untouched namespace form.
+
 ## v1.11.0 (2026-08-24)
 
 ### Cross-statement requirement rule + identity resolver hook (contributed by Scorpse)

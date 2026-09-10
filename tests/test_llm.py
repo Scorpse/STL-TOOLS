@@ -210,3 +210,11 @@ class TestPromptTemplate:
         assert "confidence" in template
         assert "causal" in template
         assert "Event_" in template
+
+
+def test_repair_keeps_dots_in_anchor_names():
+    """v1.12.0: '.' is no longer sanitised out of anchors — [rho.psi.search] must survive repair."""
+    from stl_parser.llm import validate_llm_output
+    r = validate_llm_output('[Tool] -> [rho.psi.search] ::mod(query="x")')
+    assert r.is_valid and r.statements[0].target.name == "rho.psi.search"
+    assert not [x for x in r.repairs if x.type == "fix_anchor_chars"]

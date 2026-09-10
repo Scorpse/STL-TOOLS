@@ -90,10 +90,10 @@ class Anchor(BaseModel):
         # Allow Unicode letters, digits, underscore, and hyphen (kebab-case)
         # \w matches [A-Za-z0-9_] plus Unicode word characters
         # Hyphen allowed mid-name but not at start
-        if not re.match(r"^[\w\u4e00-\u9fff\u0600-\u06ff][\w\-\u4e00-\u9fff\u0600-\u06ff]*$", v, re.UNICODE):
+        if not re.match(r"^[\w\u4e00-\u9fff\u0600-\u06ff][\w\-\u4e00-\u9fff\u0600-\u06ff]*(?:\.[\w\-\u4e00-\u9fff\u0600-\u06ff]+)*$", v, re.UNICODE):  # v1.2.1: dotted ids
             raise ValueError(
-                f"Anchor name '{v}' must be alphanumeric + underscore + hyphen "
-                "(cannot start with hyphen)"
+                f"Anchor name '{v}' must be alphanumeric + underscore + hyphen, '.' only between segments "
+                "(cannot start with hyphen or dot)"
             )
 
         if len(v) > 64:
